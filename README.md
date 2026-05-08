@@ -71,7 +71,7 @@ The web server runs on `$PORT` and manages the Hermes gateway as a child process
 
 ## Supported Providers
 
-OpenRouter, DeepSeek, DashScope, GLM/Z.AI, Kimi, MiniMax, Hugging Face
+OpenRouter, Anthropic, Google AI Studio, DeepSeek, DashScope, GLM/Z.AI, Kimi, MiniMax, Hugging Face
 
 ## Supported Channels
 

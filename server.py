@@ -10,6 +10,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import yaml
 from starlette.applications import Starlette
 from starlette.authentication import (
     AuthCredentials,
@@ -37,6 +38,7 @@ if not ADMIN_PASSWORD:
 
 HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 ENV_FILE_PATH = Path(HERMES_HOME) / ".env"
+CONFIG_FILE_PATH = Path(HERMES_HOME) / "config.yaml"
 PAIRING_DIR = Path(HERMES_HOME) / "pairing"
 CODE_TTL_SECONDS = 3600
 
@@ -44,9 +46,14 @@ CODE_TTL_SECONDS = 3600
 # Each entry: (key, label, category, is_password)
 ENV_VAR_DEFS = [
     # Model
-    ("LLM_MODEL", "Model", "model", False),
+    ("HERMES_INFERENCE_MODEL", "Model", "model", False),
+    ("HERMES_INFERENCE_PROVIDER", "Provider", "model", False),
+    # Legacy UI field kept so older saved configs continue to round-trip.
+    ("LLM_MODEL", "Legacy Model", "model", False),
     # Providers
     ("OPENROUTER_API_KEY", "OpenRouter API Key", "provider", True),
+    ("ANTHROPIC_API_KEY", "Anthropic API Key", "provider", True),
+    ("GOOGLE_API_KEY", "Google AI Studio API Key", "provider", True),
     ("DEEPSEEK_API_KEY", "DeepSeek API Key", "provider", True),
     ("DASHSCOPE_API_KEY", "DashScope API Key", "provider", True),
     ("GLM_API_KEY", "GLM / Z.AI API Key", "provider", True),
@@ -91,6 +98,7 @@ ENV_VAR_DEFS = [
 ]
 
 PASSWORD_KEYS = {key for key, _, _, is_pw in ENV_VAR_DEFS if is_pw}
+MODEL_KEYS = {"HERMES_INFERENCE_MODEL", "HERMES_INFERENCE_PROVIDER", "LLM_MODEL"}
 
 PROVIDER_KEYS = [key for key, _, cat, _ in ENV_VAR_DEFS if cat == "provider" and key != "LLM_MODEL"]
 CHANNEL_KEYS = {
@@ -126,7 +134,7 @@ def read_env_file(path: Path) -> dict[str, str]:
 def write_env_file(path: Path, env_vars: dict[str, str]):
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    categories = {"model": "Model", "provider": "Providers", "tool": "Tools", "messaging": "Messaging"}
+    categories = {"provider": "Providers", "tool": "Tools", "messaging": "Messaging"}
     grouped: dict[str, list[str]] = {cat: [] for cat in categories}
     known_keys = {key for key, _, _, _ in ENV_VAR_DEFS}
     key_to_cat = {key: cat for key, _, cat, _ in ENV_VAR_DEFS}
@@ -156,6 +164,73 @@ def write_env_file(path: Path, env_vars: dict[str, str]):
         lines.append("")
 
     path.write_text("\n".join(lines) + "\n" if lines else "")
+    path.chmod(0o600)
+
+
+def read_config_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_config_file(path: Path, config: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
+def read_runtime_env_vars() -> dict[str, str]:
+    result = read_env_file(ENV_FILE_PATH)
+    for key, _, _, _ in ENV_VAR_DEFS:
+        if not result.get(key) and os.environ.get(key):
+            result[key] = os.environ[key]
+    return result
+
+
+def read_model_vars() -> dict[str, str]:
+    config = read_config_file(CONFIG_FILE_PATH)
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, str):
+        return {"HERMES_INFERENCE_MODEL": model_cfg.strip()} if model_cfg.strip() else {}
+    if not isinstance(model_cfg, dict):
+        return {}
+
+    result = {}
+    model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    if model:
+        result["HERMES_INFERENCE_MODEL"] = model
+        result["LLM_MODEL"] = model
+    if provider:
+        result["HERMES_INFERENCE_PROVIDER"] = provider
+    return result
+
+
+def write_model_config(vars: dict[str, str]):
+    model = (vars.get("HERMES_INFERENCE_MODEL") or vars.get("LLM_MODEL") or "").strip()
+    provider = (vars.get("HERMES_INFERENCE_PROVIDER") or "").strip().lower()
+
+    config = read_config_file(CONFIG_FILE_PATH)
+    existing_model = config.get("model")
+    model_cfg = dict(existing_model) if isinstance(existing_model, dict) else {}
+
+    if model:
+        model_cfg["default"] = model
+    else:
+        model_cfg.pop("default", None)
+        model_cfg.pop("model", None)
+
+    if provider and provider != "auto":
+        model_cfg["provider"] = provider
+    else:
+        model_cfg.pop("provider", None)
+
+    if model_cfg:
+        config["model"] = model_cfg
+    else:
+        config.pop("model", None)
+
+    write_config_file(CONFIG_FILE_PATH, config)
 
 
 def mask_secrets(env_vars: dict[str, str]) -> dict[str, str]:
@@ -165,6 +240,20 @@ def mask_secrets(env_vars: dict[str, str]) -> dict[str, str]:
             result[key] = value[:8] + "***" if len(value) > 8 else "***"
         else:
             result[key] = value
+    return result
+
+
+def normalize_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
+    """Keep older LLM_MODEL saves compatible with current Hermes env names."""
+    result = {key: value for key, value in env_vars.items() if value is not None}
+    legacy_model = result.get("LLM_MODEL", "").strip()
+    model = result.get("HERMES_INFERENCE_MODEL", "").strip()
+    if legacy_model and not model:
+        result["HERMES_INFERENCE_MODEL"] = legacy_model
+    if result.get("HERMES_INFERENCE_MODEL"):
+        result["LLM_MODEL"] = result["HERMES_INFERENCE_MODEL"]
+    if result.get("HERMES_INFERENCE_PROVIDER"):
+        result["HERMES_INFERENCE_PROVIDER"] = result["HERMES_INFERENCE_PROVIDER"].strip().lower()
     return result
 
 
@@ -311,7 +400,8 @@ async def api_config_get(request: Request):
     if auth_err:
         return auth_err
     async with config_lock:
-        env_vars = read_env_file(ENV_FILE_PATH)
+        env_vars = normalize_env_vars(read_runtime_env_vars())
+        env_vars.update(read_model_vars())
     defs = [
         {"key": key, "label": label, "category": cat, "password": is_pw}
         for key, label, cat, is_pw in ENV_VAR_DEFS
@@ -334,11 +424,15 @@ async def api_config_put(request: Request):
         new_vars = body.get("vars", {})
 
         async with config_lock:
+            new_vars = normalize_env_vars(new_vars)
+            write_model_config(new_vars)
             existing = read_env_file(ENV_FILE_PATH)
-            merged = merge_secrets(new_vars, existing)
+            existing_runtime = read_runtime_env_vars()
+            env_new_vars = {key: value for key, value in new_vars.items() if key not in MODEL_KEYS}
+            merged = merge_secrets(env_new_vars, existing_runtime)
             # Preserve any existing vars not in the UI
             for key, value in existing.items():
-                if key not in merged:
+                if key not in MODEL_KEYS and key not in merged:
                     merged[key] = value
             write_env_file(ENV_FILE_PATH, merged)
 
@@ -356,7 +450,7 @@ async def api_status(request: Request):
     if auth_err:
         return auth_err
 
-    env_vars = read_env_file(ENV_FILE_PATH)
+    env_vars = read_runtime_env_vars()
 
     providers = {}
     for key in PROVIDER_KEYS:
@@ -552,7 +646,7 @@ async def api_pairing_revoke(request: Request):
 
 
 async def auto_start_gateway():
-    env_vars = read_env_file(ENV_FILE_PATH)
+    env_vars = read_runtime_env_vars()
     has_provider = any(env_vars.get(key) for key in PROVIDER_KEYS)
     if has_provider:
         asyncio.create_task(gateway.start())

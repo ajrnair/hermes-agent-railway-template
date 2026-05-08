@@ -57,12 +57,25 @@
         <section>
           <h2 class="text-lg font-semibold mb-3">Model</h2>
           <div class="bg-white border border-gray-200 dark:bg-gray-900 dark:border-gray-800 rounded-xl p-4">
-            <div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Provider</label>
+                <select class="w-full bg-gray-100 border border-gray-300 dark:bg-gray-800 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        :value="vars.HERMES_INFERENCE_PROVIDER || 'auto'"
+                        @change="vars.HERMES_INFERENCE_PROVIDER = $event.target.value">
+                  <template x-for="provider in modelProviders" :key="provider.value">
+                    <option :value="provider.value" x-text="provider.label"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="md:col-span-2">
               <label class="block text-xs text-gray-500 mb-1">LLM Model</label>
               <input type="text" class="w-full bg-gray-100 border border-gray-300 dark:bg-gray-800 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                     :value="vars.LLM_MODEL || ''" @input="vars.LLM_MODEL = $event.target.value"
-                     placeholder="anthropic/claude-opus-4.6">
-              <p class="text-xs text-gray-400 mt-1">OpenRouter format: provider/model (e.g. anthropic/claude-opus-4.6, openai/gpt-4o, google/gemini-3-flash-preview)</p>
+                     :value="vars.HERMES_INFERENCE_MODEL || vars.LLM_MODEL || ''"
+                     @input="vars.HERMES_INFERENCE_MODEL = $event.target.value; vars.LLM_MODEL = $event.target.value"
+                     :placeholder="modelPlaceholder()">
+              <p class="text-xs text-gray-400 mt-1" x-text="modelHelp()"></p>
+              </div>
             </div>
           </div>
         </section>
@@ -476,12 +489,27 @@
 
         providers: [
           { key: 'OPENROUTER_API_KEY', label: 'OpenRouter' },
+          { key: 'ANTHROPIC_API_KEY', label: 'Anthropic' },
+          { key: 'GOOGLE_API_KEY', label: 'Google AI Studio' },
           { key: 'DEEPSEEK_API_KEY', label: 'DeepSeek' },
           { key: 'DASHSCOPE_API_KEY', label: 'DashScope' },
           { key: 'GLM_API_KEY', label: 'GLM / Z.AI' },
           { key: 'KIMI_API_KEY', label: 'Kimi' },
           { key: 'MINIMAX_API_KEY', label: 'MiniMax' },
           { key: 'HF_TOKEN', label: 'Hugging Face' },
+        ],
+
+        modelProviders: [
+          { value: 'auto', label: 'Auto' },
+          { value: 'openrouter', label: 'OpenRouter' },
+          { value: 'anthropic', label: 'Anthropic' },
+          { value: 'gemini', label: 'Google Gemini' },
+          { value: 'deepseek', label: 'DeepSeek' },
+          { value: 'alibaba', label: 'DashScope / Qwen' },
+          { value: 'zai', label: 'GLM / Z.AI' },
+          { value: 'kimi-coding', label: 'Kimi' },
+          { value: 'minimax', label: 'MiniMax' },
+          { value: 'huggingface', label: 'Hugging Face' },
         ],
 
         tools: [
@@ -512,6 +540,12 @@
             if (res.ok) {
               const data = await res.json();
               this.vars = data.vars || {};
+              if (!this.vars.HERMES_INFERENCE_MODEL && this.vars.LLM_MODEL) {
+                this.vars.HERMES_INFERENCE_MODEL = this.vars.LLM_MODEL;
+              }
+              if (!this.vars.HERMES_INFERENCE_PROVIDER) {
+                this.vars.HERMES_INFERENCE_PROVIDER = 'auto';
+              }
               this.defs = data.defs || [];
             }
           } catch (e) {}
@@ -520,6 +554,7 @@
         async saveConfig() {
           this.saving = true;
           try {
+            this.vars.LLM_MODEL = this.vars.HERMES_INFERENCE_MODEL || this.vars.LLM_MODEL || '';
             const payload = {
               vars: JSON.parse(JSON.stringify(this.vars)),
               _restartGateway: this.restartAfterSave,
@@ -653,6 +688,23 @@
           if (h > 0) return `${h}h ${m}m ${s}s`;
           if (m > 0) return `${m}m ${s}s`;
           return `${s}s`;
+        },
+
+        modelPlaceholder() {
+          const provider = this.vars.HERMES_INFERENCE_PROVIDER || 'auto';
+          if (provider === 'anthropic') return 'claude-opus-4-7';
+          if (provider === 'gemini') return 'gemini-3-flash-preview';
+          if (provider === 'deepseek') return 'deepseek-chat';
+          if (provider === 'openrouter') return 'anthropic/claude-sonnet-4.6';
+          return 'anthropic/claude-sonnet-4.6';
+        },
+
+        modelHelp() {
+          const provider = this.vars.HERMES_INFERENCE_PROVIDER || 'auto';
+          if (provider === 'anthropic') return 'Anthropic direct format: bare model ID, e.g. claude-opus-4-7 or claude-sonnet-4-6.';
+          if (provider === 'gemini') return 'Google direct format: bare Gemini model ID, e.g. gemini-3-flash-preview.';
+          if (provider === 'openrouter') return 'OpenRouter format: provider/model, e.g. anthropic/claude-sonnet-4.6 or google/gemini-3-flash-preview.';
+          return 'Use the model format expected by the selected provider. Auto works best when exactly one provider key is configured.';
         },
 
         showToast(message, type = 'success') {
